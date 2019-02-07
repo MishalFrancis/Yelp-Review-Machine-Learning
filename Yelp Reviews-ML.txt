@@ -1,0 +1,87 @@
+
+//import required libraries
+import org.apache.spark.sql.functions._
+import org.apache.spark.ml.feature.{VectorAssembler,RegexTokenizer,StopWordsRemover,NGram,HashingTF,IDF}
+import org.apache.spark.ml.Pipeline
+import org.apache.spark.ml.tuning.{CrossValidator, CrossValidatorModel, ParamGridBuilder}
+import org.apache.spark.ml.evaluation.{RegressionEvaluator}
+import org.apache.spark.ml.param.ParamMap
+import org.apache.spark.sql.types.{DoubleType}
+import org.apache.spark.ml.classification.{LinearSVC}
+import org.apache.spark.ml.evaluation.MulticlassClassificationEvaluator
+
+
+//import data
+val yelp_reviews = spark.read.format("json")
+.option("header", "true") 
+.option("inferSchema", "true")
+.option("path", "file:////home/mishal/Downloads/review-1000.json").load()
+
+
+//filter out data with rating 3
+val rating_ft = yelp_reviews.filter("stars != 3")
+
+//group rating - 4,5 and 1, 2 
+val group_rating = rating_ft.withColumn("rating", when((col("stars") === 4) || (col("stars") === 5),1).otherwise(0))
+
+
+
+//split the sentences using RegexTokenizer() 
+val regexTokenizer = new RegexTokenizer().setInputCol("text").setOutputCol("words").setPattern("\\s+")
+
+
+//remove all stop words
+
+val stop_word_rmvr = new StopWordsRemover()
+  .setInputCol("words")
+  .setOutputCol("cleanedWords")
+
+//group trigrams
+val ngram_3 = new NGram().setN(3).setInputCol("cleanedWords").setOutputCol("ngram")
+
+val hashingTF_func = new HashingTF().setInputCol("ngram").setOutputCol("rawFeatures").setNumFeatures(300)
+
+val idf_func = new IDF().setInputCol("rawFeatures").setOutputCol("IDFOutput")
+
+val linear_SVC = new LinearSVC().setFeaturesCol("IDFOutput").setLabelCol("rating")
+
+
+val pipeline = new Pipeline().setStages(Array(regexTokenizer,stop_word_rmvr ,ngram_3 ,hashingTF_func ,idf_func, linear_SVC))
+
+
+val evaluator = new MulticlassClassificationEvaluator()
+  .setLabelCol("rating")
+  .setPredictionCol("prediction")
+  .setMetricName("accuracy")
+
+
+val cross_validator = new CrossValidator()
+ .setEstimator(pipeline)
+ .setEvaluator(evaluator)
+ .setEstimatorParamMaps(new ParamGridBuilder().build)
+ .setNumFolds(3)
+
+
+val Array(trainingData, testData) = group_rating.randomSplit(Array(0.7, 0.3),3114)
+
+
+
+// Train the model
+
+
+val cvModel = cross_validator.fit(trainingData)
+
+//Predict with test data
+val predictions = cvModel.transform(testData)
+
+
+predictions
+ .select(col("rating"), col("review_id"), col("prediction"))
+ .write
+ .format("csv")
+ .save("file:////home/mishal/BDAT1008/output") 
+
+
+//check the accuracy
+val accuracy = evaluator.evaluate(predictions)
+println("Accuracy on test data = " + accuracy)
